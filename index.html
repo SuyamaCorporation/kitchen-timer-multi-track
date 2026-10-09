@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>マルチタスク料理タイマー</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @keyframes pulse-alert { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+  .alert-pulse { animation: pulse-alert 0.6s ease-in-out infinite; }
+  @keyframes ring-bounce { 0%,100%{transform:scale(1);} 50%{transform:scale(1.08);} }
+  .ring-bounce { animation: ring-bounce 0.4s ease-in-out infinite; }
+</style>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        terra: {
+          50: '#fdf4f0', 100: '#fce8df', 200: '#f8c9b5',
+          300: '#f3a080', 400: '#ec6d46', 500: '#d94f28',
+          600: '#c23d1a', 700: '#9e2f12', 800: '#7e250e',
+          900: '#661f0c'
+        }
+      }
+    }
+  }
+}
+</script>
+</head>
+<body class="bg-terra-50 min-h-screen font-sans">
+
+<div class="max-w-2xl mx-auto px-4 py-6">
+  <h1 class="text-3xl font-bold text-terra-700 mb-1 text-center">🍳 マルチタスク料理タイマー</h1>
+  <p class="text-terra-500 text-center text-sm mb-6">複数の料理を同時にカウントダウン</p>
+
+  <!-- Add Timer Form -->
+  <div class="bg-white rounded-2xl shadow-md p-5 mb-5 border border-terra-100">
+    <h2 class="text-lg font-semibold text-terra-700 mb-3">タイマーを追加</h2>
+    <div class="flex flex-col sm:flex-row gap-3">
+      <input id="dishName" type="text" placeholder="料理名（例：パスタ）" maxlength="30"
+        aria-label="料理名"
+        class="flex-1 border border-terra-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-terra-400">
+      <div class="flex gap-2">
+        <input id="timeMM" type="number" min="0" max="99" placeholder="分" aria-label="分"
+          class="w-16 border border-terra-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-terra-400">
+        <span class="self-center text-terra-500 font-bold">:</span>
+        <input id="timeSS" type="number" min="0" max="59" placeholder="秒" aria-label="秒"
+          class="w-16 border border-terra-200 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-terra-400">
+      </div>
+      <button id="addTimerBtn" aria-label="タイマーを追加"
+        class="bg-terra-500 hover:bg-terra-600 text-white font-semibold rounded-lg px-5 py-2 text-sm transition-colors">
+        追加
+      </button>
+    </div>
+    <!-- Recent Presets -->
+    <div id="presetsArea" class="mt-3 hidden">
+      <p class="text-xs text-terra-400 mb-1">最近のプリセット:</p>
+      <div id="presetsList" class="flex flex-wrap gap-2"></div>
+    </div>
+  </div>
+
+  <!-- Optimize Section -->
+  <div class="bg-white rounded-2xl shadow-md p-5 mb-5 border border-terra-100">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-terra-700">同時完成オプティマイザー</h2>
+      <button id="toggleOptimize" aria-label="オプティマイザーを展開"
+        class="text-terra-400 hover:text-terra-600 text-xl transition-colors">▼</button>
+    </div>
+    <div id="optimizePanel" class="hidden mt-3">
+      <p class="text-sm text-terra-500 mb-3">追加済みタイマーの開始時刻をずらして全て同時に完成させます。</p>
+      <button id="optimizeBtn" aria-label="開始時刻を最適化"
+        class="bg-terra-400 hover:bg-terra-500 text-white font-semibold rounded-lg px-5 py-2 text-sm transition-colors">
+        最適化して一括スタート
+      </button>
+      <div id="optimizeResult" class="mt-3 text-sm text-terra-600"></div>
+    </div>
+  </div>
+
+  <!-- Timers List -->
+  <div id="timersList" class="space-y-4"></div>
+
+  <!-- Big Alert Modal -->
+  <div id="alertModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-3xl p-8 shadow-2xl text-center max-w-sm mx-4 ring-bounce">
+      <div id="alertEmoji" class="text-6xl mb-3">🔔</div>
+      <h2 id="alertTitle" class="text-2xl font-bold text-terra-700 mb-2 alert-pulse"></h2>
+      <p class="text-terra-500 mb-5">タイマーが完了しました！</p>
+      <button id="alertDismiss" aria-label="アラートを閉じる"
+        class="bg-terra-500 hover:bg-terra-600 text-white font-bold rounded-xl px-8 py-3 text-lg transition-colors">
+        OK
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  const STORAGE_KEY = 'kitchen-timer-presets';
+  const MAX_PRESETS = 8;
+
+  let timers = [];
+  let nextId = 1;
+  let audioCtx = null;
+
+  function getAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return audioCtx;
+  }
+
+  function beep(frequency, duration, type) {
+    try {
+      const ctx = getAudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(frequency, ctx.currentTime);
+      gain.gain.setValueAtTime(0.4, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + duration);
+    } catch(e) {}
+  }
+
+  function playAlertSound() {
+    beep(880, 0.3, 'sine');
+    setTimeout(() => beep(1100, 0.3, 'sine'), 350);
+    setTimeout(() => beep(880, 0.5, 'sine'), 700);
+  }
+
+  function loadPresets() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+    catch(e) { return []; }
+  }
+
+  function savePreset(name, totalSeconds) {
+    let presets = loadPresets();
+    // Remove duplicate
+    presets = presets.filter(p => !(p.name === name && p.totalSeconds === totalSeconds));
+    presets.unshift({ name, totalSeconds });
+    if (presets.length > MAX_PRESETS) presets = presets.slice(0, MAX_PRESETS);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+    renderPresets();
+  }
+
+  function renderPresets() {
+    const presets = loadPresets();
+    const area = document.getElementById('presetsArea');
+    const list = document.getElementById('presetsList');
+    if (presets.length === 0) { area.classList.add('hidden'); return; }
+    area.classList.remove('hidden');
+    list.textContent = '';
+    presets.forEach(p => {
+      const btn = document.createElement('button');
+      btn.setAttribute('aria-label', p.name + ' プリセットを追加');
+      btn.className = 'bg-terra-100 hover:bg-terra-200 text-terra-700 text-xs rounded-lg px-3 py-1 transition-colors';
+      const mm = String(Math.floor(p.totalSeconds / 60)).padStart(2, '0');
+      const ss = String(p.totalSeconds % 60).padStart(2, '0');
+      btn.textContent = p.name + ' ' + mm + ':' + ss;
+      btn.addEventListener('click', () => {
+        document.getElementById('dishName').value = p.name;
+        document.getElementById('timeMM').value = Math.floor(p.totalSeconds / 60);
+        document.getElementById('timeSS').value = p.totalSeconds % 60;
+      });
+      list.appendChild(btn);
+    });
+  }
+
+  function formatTime(secs) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  }
+
+  function addTimer(name, totalSeconds, delayStart) {
+    const id = nextId++;
+    const timer = {
+      id, name,
+      initialSeconds: totalSeconds,
+      remaining: totalSeconds,
+      state: 'paused', // paused | running | done
+      interval: null,
+      delayMs: delayStart || 0
+    };
+    timers.push(timer);
+    renderTimer(timer);
+    return timer;
+  }
+
+  function showAlert(name) {
+    playAlertSound();
+    const modal = document.getElementById('alertModal');
+    document.getElementById('alertTitle').textContent = name + ' が完成！';
+    modal.classList.remove('hidden');
+  }
+
+  function tickTimer(timer) {
+    if (timer.remaining <= 0) {
+      timer.state = 'done';
+      clearInterval(timer.interval);
+      timer.interval = null;
+      updateTimerDisplay(timer);
+      showAlert(timer.name);
+      return;
+    }
+    timer.remaining--;
+    updateTimerDisplay(timer);
+  }
+
+  function startTimer(timer) {
+    if (timer.state === 'running' || timer.state === 'done') return;
+    timer.state = 'running';
+    timer.interval = setInterval(() => tickTimer(timer), 1000);
+    updateTimerDisplay(timer);
+  }
+
+  function pauseTimer(timer) {
+    if (timer.state !== 'running') return;
+    timer.state = 'paused';
+    clearInterval(timer.interval);
+    timer.interval = null;
+    updateTimerDisplay(timer);
+  }
+
+  function resetTimer(timer) {
+    clearInterval(timer.interval);
+    timer.interval = null;
+    timer.remaining = timer.initialSeconds;
+    timer.state = 'paused';
+    updateTimerDisplay(timer);
+  }
+
+  function removeTimer(timer) {
+    clearInterval(timer.interval);
+    timers = timers.filter(t => t.id !== timer.id);
+    const el = document.getElementById('timer-' + timer.id);
+    if (el) el.remove();
+  }
+
+  function updateTimerDisplay(timer) {
+    const el = document.getElementById('timer-' + timer.id);
+    if (!el) return;
+
+    const display = el.querySelector('.timer-display');
+    const startBtn = el.querySelector('.btn-start');
+    const pauseBtn = el.querySelector('.btn-pause');
+    const prog = el.querySelector('.timer-progress');
+
+    display.textContent = formatTime(timer.remaining);
+
+    const ratio = timer.initialSeconds > 0 ? (timer.remaining / timer.initialSeconds) : 0;
+    prog.style.width = (ratio * 100) + '%';
+
+    if (timer.state === 'done') {
+      el.classList.add('ring-2', 'ring-terra-400', 'alert-pulse');
+      display.classList.add('text-terra-500');
+      startBtn.disabled = true;
+      pauseBtn.disabled = true;
+      prog.style.width = '0%';
+      prog.classList.add('bg-terra-300');
+    } else if (timer.state === 'running') {
+      el.classList.remove('alert-pulse');
+      startBtn.disabled = true;
+      pauseBtn.disabled = false;
+    } else {
+      el.classList.remove('alert-pulse');
+      startBtn.disabled = timer.remaining === 0;
+      pauseBtn.disabled = true;
+    }
+  }
+
+  function renderTimer(timer) {
+    const list = document.getElementById('timersList');
+    const card = document.createElement('div');
+    card.id = 'timer-' + timer.id;
+    card.className = 'bg-white rounded-2xl shadow-md p-5 border border-terra-100 transition-all';
+
+    // Header row
+    const header = document.createElement('div');
+    header.className = 'flex items-center justify-between mb-3';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'font-semibold text-terra-700 text-base';
+    nameEl.textContent = timer.name;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.setAttribute('aria-label', timer.name + ' タイマーを削除');
+    removeBtn.className = 'text-terra-300 hover:text-terra-500 text-xl leading-none transition-colors';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => removeTimer(timer));
+
+    header.appendChild(nameEl);
+    header.appendChild(removeBtn);
+
+    // Display
+    const displayEl = document.createElement('div');
+    displayEl.className = 'timer-display text-5xl font-mono font-bold text-terra-600 text-center my-3';
+    displayEl.textContent = formatTime(timer.remaining);
+
+    // Progress bar
+    const progBg = document.createElement('div');
+    progBg.className = 'bg-terra-100 rounded-full h-2 mb-4 overflow-hidden';
+    const prog = document.createElement('div');
+    prog.className = 'timer-progress bg-terra-400 h-2 rounded-full transition-all duration-1000';
+    prog.style.width = '100%';
+    progBg.appendChild(prog);
+
+    // Buttons
+    const btnRow = document.createElement('div');
+    btnRow.className = 'flex gap-3 justify-center';
+
+    const startBtn = document.createElement('button');
+    startBtn.className = 'btn-start bg-terra-500 hover:bg-terra-600 disabled:bg-terra-200 text-white font-semibold rounded-xl px-6 py-2 text-sm transition-colors';
+    startBtn.setAttribute('aria-label', timer.name + ' スタート');
+    startBtn.textContent = 'スタート';
+    startBtn.addEventListener('click', () => startTimer(timer));
+
+    const pauseBtn = document.createElement('button');
+    pauseBtn.className = 'btn-pause bg-terra-300 hover:bg-terra-400 disabled:bg-terra-100 disabled:text-terra-300 text-white font-semibold rounded-xl px-6 py-2 text-sm transition-colors';
+    pauseBtn.setAttribute('aria-label', timer.name + ' 一時停止');
+    pauseBtn.textContent = '一時停止';
+    pauseBtn.disabled = true;
+    pauseBtn.addEventListener('click', () => pauseTimer(timer));
+
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'btn-reset bg-white hover:bg-terra-50 border border-terra-200 text-terra-500 font-semibold rounded-xl px-5 py-2 text-sm transition-colors';
+    resetBtn.setAttribute('aria-label', timer.name + ' リセット');
+    resetBtn.textContent = 'リセット';
+    resetBtn.addEventListener('click', () => resetTimer(timer));
+
+    btnRow.appendChild(startBtn);
+    btnRow.appendChild(pauseBtn);
+    btnRow.appendChild(resetBtn);
+
+    card.appendChild(header);
+    card.appendChild(displayEl);
+    card.appendChild(progBg);
+    card.appendChild(btnRow);
+
+    list.appendChild(card);
+  }
+
+  // Event: Add Timer
+  document.getElementById('addTimerBtn').addEventListener('click', () => {
+    const name = document.getElementById('dishName').value.trim();
+    const mm = parseInt(document.getElementById('timeMM').value) || 0;
+    const ss = parseInt(document.getElementById('timeSS').value) || 0;
+    const total = mm * 60 + ss;
+    if (!name) { alert('料理名を入力してください'); return; }
+    if (total <= 0) { alert('時間を入力してください'); return; }
+    savePreset(name, total);
+    addTimer(name, total);
+    document.getElementById('dishName').value = '';
+    document.getElementById('timeMM').value = '';
+    document.getElementById('timeSS').value = '';
+  });
+
+  // Optimize toggle
+  document.getElementById('toggleOptimize').addEventListener('click', () => {
+    const panel = document.getElementById('optimizePanel');
+    panel.classList.toggle('hidden');
+  });
+
+  // Optimize logic: stagger starts so all finish at the same time
+  document.getElementById('optimizeBtn').addEventListener('click', () => {
+    if (timers.length === 0) {
+      document.getElementById('optimizeResult').textContent = 'タイマーがありません。';
+      return;
+    }
+    // Stop all running timers first
+    timers.forEach(t => { if (t.state === 'running') pauseTimer(t); });
+    // Reset all
+    timers.forEach(t => resetTimer(t));
+
+    const maxTime = Math.max(...timers.map(t => t.initialSeconds));
+    const resultDiv = document.getElementById('optimizeResult');
+    resultDiv.textContent = '';
+
+    timers.forEach(t => {
+      const delay = (maxTime - t.initialSeconds) * 1000;
+      const delayMin = Math.floor(delay / 60000);
+      const delaySec = Math.floor((delay % 60000) / 1000);
+      const p = document.createElement('p');
+      p.className = 'text-terra-600 text-sm';
+      if (delay === 0) {
+        p.textContent = t.name + ': 今すぐスタート';
+      } else {
+        p.textContent = t.name + ': ' + delayMin + '分' + delaySec + '秒後にスタート';
+      }
+      resultDiv.appendChild(p);
+      setTimeout(() => startTimer(t), delay);
+    });
+  });
+
+  // Alert dismiss
+  document.getElementById('alertDismiss').addEventListener('click', () => {
+    document.getElementById('alertModal').classList.add('hidden');
+  });
+
+  // Init presets
+  renderPresets();
+})();
+</script>
+</body>
+</html>
